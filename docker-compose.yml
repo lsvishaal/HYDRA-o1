@@ -1,0 +1,79 @@
+version: "3.8"
+
+services:
+  flask_app:
+    build: ./flask_app
+    container_name: hydra_flask_app
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./flask_app/.env
+    volumes:
+      - flask_logs:/var/log/hydra  # Named volume for logging
+    restart: unless-stopped
+    networks:
+      - hydra_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: hydra_prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus   # Persistent storage for metrics
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    networks:
+      - hydra_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/-/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: hydra_grafana
+    volumes:
+      - ./grafana/grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    networks:
+      - hydra_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: hydra_cadvisor
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    restart: unless-stopped
+    networks:
+      - hydra_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  hydra_network:  # Define custom network for service discovery
+
+volumes:
+  flask_logs:
+  prometheus_data:
