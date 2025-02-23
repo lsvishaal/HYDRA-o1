@@ -1,52 +1,70 @@
-import logging
+import redis
+import json
 import os
 import sys
-from logging.handlers import RotatingFileHandler
-from flask import Flask, Response
+import time
+from flask import Flask, Response, request
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter
 
 app = Flask(__name__)
 
-# Define log directory inside the container
-log_dir = "/var/log/hydra"
-log_file = os.path.join(log_dir, "flask_app.log")
+# Environment Variables
+REDIS_HOST = os.getenv("REDIS_HOST", "hydra_redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
-# Ensure the log directory exists with correct permissions
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir, exist_ok=True)
-    os.chmod(log_dir, 0o777)  # Ensure it's writable inside Docker
+# Prometheus Metrics
+REQUEST_COUNT = Counter('flask_app_request_count', 'Total HTTP requests received')
 
-# Configure log handler
-file_handler = RotatingFileHandler(log_file, maxBytes=1000000, backupCount=3, delay=True)
-file_handler.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-file_handler.setFormatter(formatter)
-app.logger.addHandler(file_handler)
+# Attempt Redis Connection
+try:
+    redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    redis_client.ping()  # Test Redis Connection
+    print("[✅] Connected to Redis Successfully!")
+except redis.ConnectionError as e:
+    print(f"[❌] Redis Connection Failed: {e}")
+    sys.exit(1)  # Exit if Redis is unreachable
 
-# Also log to stdout for debugging
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(formatter)
-app.logger.addHandler(console_handler)
+def log_to_redis(log_data):
+    """
+    Publishes structured logs to Redis Stream 'flask_logs'.
+    """
+    try:
+        redis_client.xadd("flask_logs", {"log": json.dumps(log_data)})
+        print(f"[Producer] Log Published: {json.dumps(log_data, ensure_ascii=False)}")
+    except Exception as e:
+        print(f"[Error] Redis Logging Failed: {str(e)}")
 
-app.logger.setLevel(logging.INFO)
-app.logger.propagate = False  # Prevent duplicate logs
-
-# Log when the app starts
-app.logger.info("✅ Flask Logging Initialized & Writing to /var/log/hydra/flask_app.log")
-
-# Health check route
 @app.route('/health')
 def health():
-    app.logger.info("🩺 Health check accessed")
+    """
+    Health check endpoint.
+    """
+    log_to_redis({
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "level": "INFO",
+        "message": "Health check accessed",
+        "request": request.path
+    })
     return "OK", 200
 
 @app.before_request
 def before_request():
-    app.logger.info("➡️ Received request")
+    """
+    Logs each incoming request to Redis and increments Prometheus Counter.
+    """
+    REQUEST_COUNT.inc()
+    log_to_redis({
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "level": "INFO",
+        "message": f"Received request: {request.path}",
+        "request": request.path
+    })
 
 @app.route('/metrics')
 def metrics():
+    """
+    Prometheus metrics endpoint.
+    """
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 if __name__ == "__main__":
