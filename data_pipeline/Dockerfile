@@ -8,6 +8,9 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install additional utilities
+RUN apt update && apt install -y curl net-tools procps
+
 # Copy the application code
 COPY . /app
 
@@ -15,4 +18,4 @@ COPY . /app
 EXPOSE 8000
 
 # Run the log processing script
-CMD ["python","-u", "preprocess_metrics.py"]
+CMD ["python", "preprocess_metrics.py"]

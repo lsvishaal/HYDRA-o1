@@ -3,32 +3,14 @@ networks:
     driver: bridge
 
 services:
-  # ✅ Redis for real-time log ingestion
-  redis:
-    image: redis:latest
-    container_name: hydra_redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf  # Updated path
-    command: redis-server /usr/local/etc/redis/redis.conf
-    networks:
-      - hydra_network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      retries: 3
-
-
-  # ✅ Flask Application (Generates logs)
-  flask_app:
-    build: ./flask_app
-    container_name: hydra_flask_app
+  # ✅ Hydra's Internal Flask App (Core)
+  hydra_core:
+    build: ./hydra_core
+    container_name: hydra_core
     ports:
       - "5000:5000"
     env_file:
-      - ./flask_app/.env
+      - ./hydra_core/.env
     volumes:
       - ./logs:/var/log/hydra
     restart: unless-stopped
@@ -41,6 +23,55 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
+      retries: 3
+      start_period: 120s  # Allow Flask to fully start before health check fails
+
+  # ✅ Target Flask App (User-Provided)
+  target_flask:
+    build: ./target_flask
+    container_name: target_flask
+    ports:
+      - "5050:5050"  # Ensure consistency inside and outside container
+    env_file:
+      - ./target_flask/.env
+    volumes:
+      - ./target_flask:/app
+    restart: unless-stopped
+    networks:
+      - hydra_network
+    depends_on:
+      hydra_core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5050/"]  # Check root instead of /health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 320s  # Allow Flask app to fully start
+    command: >
+      /bin/sh -c "
+      if [ -f /app/app.py ]; then 
+        gunicorn --preload --timeout 90 -w 2 -b 0.0.0.0:5050 app:app;  
+      else 
+        echo '[❌] No app.py found in target_flask! Exiting...' && exit 1; 
+      fi"
+
+
+  # ✅ Redis for real-time log ingestion
+  redis:
+    image: redis:latest
+    container_name: hydra_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - hydra_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
       retries: 3
 
   # ✅ Data Pipeline (Processes logs from Redis)
@@ -110,6 +141,26 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # ✅ Machine Learning Model
+  ml_model:
+    build: ./ml_model
+    container_name: hydra_ml_model
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - ./ml_model/.env
+    volumes:
+      - ./ml_model:/app
+      - ./logs:/app/logs
+      - ./ml_model/data:/app/data
+    ports:
+      - "8500:8500"
+    restart: unless-stopped
+    networks:
+      - hydra_network
+    command: ["python", "predict.py"]
 
 volumes:
   redis_data:
